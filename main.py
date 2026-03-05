@@ -67,32 +67,41 @@ def _start_jvm_background() -> None:
         if not jpype.isJVMStarted():
             mpxj_jars = _collect_mpxj_jars()
 
-            # Build the classpath string from all discovered JARs and pass it
-            # directly as a JVM system property argument.  This bypasses all
-            # JPype classpath management (addClassPath / classpath= kwarg),
-            # both of which have proven unreliable in containerised environments.
-            classpath_str = ":".join(mpxj_jars)
-            logger.info(
-                "Starting JVM with -Djava.class.path containing %d JARs",
-                len(mpxj_jars),
-            )
+            # Ensure every discovered JAR is on JPype's classpath.
+            # ``import mpxj`` already called ``addClassPath()`` for each JAR
+            # in its __init__.py, but we add them again here as a safety-net
+            # (addClassPath is idempotent before JVM start).
+            for jar in mpxj_jars:
+                jpype.addClassPath(jar)
 
+            resolved_cp = jpype.getClassPath()
+            logger.info(
+                "Starting JVM — JPype classpath has %d entries",
+                len(resolved_cp.split(os.pathsep)) if resolved_cp else 0,
+            )
+            logger.info("Classpath: %s", resolved_cp)
+
+            # Use JPype's classpath= kwarg which feeds into its own
+            # classloader.  Previous attempts used -Djava.class.path which
+            # bypasses JPype's classloader and breaks jpype.imports.
             jpype.startJVM(
                 jvm_path,
-                f"-Djava.class.path={classpath_str}",
                 convertStrings=False,
             )
 
         logger.info("JVM started successfully")
 
-        # Validate that MPXJ classes are actually loadable by performing
-        # the real import that the /parse-mpp endpoint needs.  JPackage
-        # returns a lazy stub in some JPype versions and may not throw for
-        # missing classes, so we use the direct import instead.
+        # Validate that MPXJ classes are actually loadable.
+        # Use jpype.JClass() which resolves through the JVM classloader
+        # directly — more reliable than Python-style ``from org.mpxj...``
+        # imports which depend on jpype.imports hooks.
         try:
-            from org.mpxj.reader import UniversalProjectReader  # noqa: F811
+            UniversalProjectReader = jpype.JClass(
+                "org.mpxj.reader.UniversalProjectReader"
+            )
             logger.info(
-                "MPXJ classpath probe succeeded — UniversalProjectReader is loadable"
+                "MPXJ classpath probe succeeded — UniversalProjectReader: %s",
+                UniversalProjectReader,
             )
         except Exception as probe_err:
             logger.error(
@@ -244,8 +253,9 @@ async def parse_mpp(file: UploadFile = File(...)):
         )
 
         # ── Parse with MPXJ ───────────────────────────────────────────────────
-        from org.mpxj.reader import UniversalProjectReader
-
+        UniversalProjectReader = jpype.JClass(
+            "org.mpxj.reader.UniversalProjectReader"
+        )
         reader = UniversalProjectReader()
         project = reader.read(tmp_path)
 
