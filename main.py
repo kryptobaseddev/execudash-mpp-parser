@@ -41,38 +41,24 @@ def _start_jvm_background() -> None:
         if not jpype.isJVMStarted():
             jvm_path = jpype.getDefaultJVMPath()
             logger.info("JVM path resolved to: %s", jvm_path)
-            # Collect classpath registered by `import mpxj` (via jpype.addClassPath).
-            # getClassPath() returns a colon-separated string; split it into a list so
-            # startJVM's classpath= parameter receives individual JAR paths, not one
-            # colon-joined string treated as a single (invalid) path.
+            # Log the pre-startup classpath (registered by `import mpxj` via addClassPath)
             registered_cp_str = jpype.getClassPath()
             registered_cp_list = [p for p in registered_cp_str.split(os.pathsep) if p]
-            logger.info(
-                "Classpath before startJVM: %d JARs registered", len(registered_cp_list)
-            )
-            jpype.startJVM(
-                jvmpath=jvm_path,
-                classpath=registered_cp_list,
-                convertStrings=False,
-            )
+            logger.info("Pre-startJVM classpath: %d JARs", len(registered_cp_list))
+            # Call startJVM with NO explicit classpath — let JPype use its internal
+            # _CLASSPATHS registry (populated by `import mpxj`). This is the documented
+            # correct pattern: import mpxj → startJVM() → from org.mpxj...
+            jpype.startJVM(convertStrings=False)
             logger.info("JVM started successfully")
-            # Log what the JVM actually sees as its classpath (java.class.path system property)
+            # Check post-startup classloader state
             jvm_cp = str(jpype.java.lang.System.getProperty("java.class.path"))
-            logger.info("JVM java.class.path length=%d | mpxj.jar present: %s",
-                        len(jvm_cp), "mpxj.jar" in jvm_cp)
-            # Log jpype.class.path (used when JPypeClassLoader is system loader)
             jpype_cp = str(jpype.java.lang.System.getProperty("jpype.class.path"))
-            logger.info("JVM jpype.class.path: %s", jpype_cp)
-            # Check if the system classloader supports getURLs (URLClassLoader subclass)
-            try:
-                sys_cl = jpype.java.lang.ClassLoader.getSystemClassLoader()
-                logger.info("System classloader type: %s", sys_cl.getClass().getName())
-                urls = sys_cl.getURLs()
-                mpxj_in_urls = any("mpxj.jar" in str(u) for u in urls)
-                logger.info("System classloader URLs count=%d | mpxj.jar in URLs: %s",
-                            len(urls), mpxj_in_urls)
-            except Exception as cl_err:
-                logger.info("Could not inspect system classloader URLs: %s", cl_err)
+            sys_cl = jpype.java.lang.ClassLoader.getSystemClassLoader()
+            logger.info(
+                "Post-start: java.class.path len=%d, mpxj.jar=%s, jpype.class.path=%s, syscl=%s",
+                len(jvm_cp), "mpxj.jar" in jvm_cp, jpype_cp,
+                sys_cl.getClass().getName()
+            )
         else:
             logger.info("JVM already running (started externally)")
 
