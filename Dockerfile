@@ -9,6 +9,15 @@ RUN mkdir -p /usr/share/man/man1 && \
     apt-get install -y --no-install-recommends default-jre-headless && \
     rm -rf /var/lib/apt/lists/*
 
+# Set JAVA_HOME explicitly so JPype doesn't need subprocess detection to find the JVM.
+# The RUN step validates the java binary exists; ENV sets it for all subsequent layers
+# and runtime. Using the amd64 path — the base image is linux/amd64 on Railway.
+RUN java -version 2>&1 && \
+    JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java)))) && \
+    echo "Detected JAVA_HOME: $JAVA_HOME"
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
 WORKDIR /app
 
 COPY requirements.txt .

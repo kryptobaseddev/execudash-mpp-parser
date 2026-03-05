@@ -1,5 +1,7 @@
+import asyncio
 import os
 import tempfile
+import threading
 import logging
 from contextlib import asynccontextmanager
 
@@ -25,25 +27,38 @@ def _parse_allowed_origins() -> list[str]:
     return origins if origins else ["*"]
 
 
+# Global readiness state — written by background thread, read by endpoints
+_jvm_ready = threading.Event()
+_jvm_error: str | None = None
+
+
+def _start_jvm_background() -> None:
+    """Initialize JVM and MPXJ in a daemon thread so uvicorn binds immediately."""
+    global _jvm_error
+    try:
+        logger.info("Background JVM startup beginning...")
+        if not jpype.isJVMStarted():
+            jpype.startJVM()
+        # Warm-load UniversalProjectReader to force JAR class loading now
+        from org.mpxj.reader import UniversalProjectReader  # noqa: F401
+        logger.info("JVM started and MPXJ warmed successfully")
+        _jvm_ready.set()
+    except Exception as exc:
+        _jvm_error = str(exc)
+        logger.error("JVM startup failed: %s", exc)
+        # Still set event so /parse-mpp can return the error rather than hang
+        _jvm_ready.set()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── Startup ──────────────────────────────────────────────────────────────
-    if not jpype.isJVMStarted():
-        jpype.startJVM()
-        logger.info("JVM started successfully")
-    else:
-        logger.info("JVM was already running — skipping startJVM()")
-
-    # Warm import: triggers class-loader resolution so the first request is fast
-    from org.mpxj.reader import UniversalProjectReader as _  # noqa: F401
-    logger.info("MPXJ UniversalProjectReader loaded — service ready")
-
+    # Start JVM in daemon thread — uvicorn binds port immediately
+    t = threading.Thread(target=_start_jvm_background, daemon=True)
+    t.start()
+    logger.info("JVM startup thread launched, server accepting connections")
     yield
-
-    # ── Shutdown ─────────────────────────────────────────────────────────────
-    # Do NOT call jpype.shutdownJVM() — JPype's atexit handler does this safely.
-    # Calling it manually here causes segfaults when the process exits afterward.
-    logger.info("ExecuDash MPP Parser service shutting down")
+    # No shutdownJVM() — let process exit naturally
+    logger.info("Service shutting down")
 
 
 ALLOWED_ORIGINS = _parse_allowed_origins()
@@ -82,10 +97,18 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check used by Railway's healthcheck probe."""
+    """Health check used by Railway's healthcheck probe.
+
+    Always returns HTTP 200 — even while JVM is still warming.
+    Railway only needs a 200; the jvm_ready/jvm_starting fields are informational.
+    """
+    jvm_ready = _jvm_ready.is_set() and _jvm_error is None
+    jvm_starting = not _jvm_ready.is_set()
     return {
         "status": "healthy",
-        "jvm_started": jpype.isJVMStarted(),
+        "jvm_ready": jvm_ready,
+        "jvm_starting": jvm_starting,
+        "jvm_error": _jvm_error,
     }
 
 
@@ -100,6 +123,23 @@ async def parse_mpp(file: UploadFile = File(...)):
       - task_count (int)
       - tasks (list of task dicts)
     """
+    # ── Gate on JVM readiness ─────────────────────────────────────────────────
+    if not _jvm_ready.is_set():
+        # Wait in a thread pool so we don't block the event loop
+        loop = asyncio.get_event_loop()
+        ready = await loop.run_in_executor(None, lambda: _jvm_ready.wait(timeout=180))
+        if not ready:
+            raise HTTPException(
+                status_code=503,
+                detail="JVM is still initializing. Retry in a moment.",
+            )
+
+    if _jvm_error is not None:
+        raise HTTPException(
+            status_code=500,
+            detail=f"JVM failed to start: {_jvm_error}",
+        )
+
     # ── Validate extension ────────────────────────────────────────────────────
     filename = file.filename or ""
     if not filename.lower().endswith(".mpp"):
