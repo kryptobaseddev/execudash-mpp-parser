@@ -45,7 +45,9 @@ def _start_jvm_background() -> None:
             # the top-level `import mpxj` (which calls jpype.addClassPath for each JAR).
             registered_cp = jpype.getClassPath()
             logger.info("Classpath before startJVM: %s", registered_cp)
-            jpype.startJVM(jvm_path, convertStrings=False)
+            # Use keyword argument jvmpath= (not positional) to avoid JPype treating
+            # the path as a JVM flag argument, which would drop the addClassPath classpath.
+            jpype.startJVM(jvmpath=jvm_path, convertStrings=False)
             logger.info("JVM started successfully")
         else:
             logger.info("JVM already running (started externally)")
