@@ -67,30 +67,21 @@ def _start_jvm_background() -> None:
         if not jpype.isJVMStarted():
             mpxj_jars = _collect_mpxj_jars()
 
-            # Register every JAR via addClassPath BEFORE startJVM.
-            # ``import mpxj`` (at module level) already calls addClassPath
-            # for each JAR, but we repeat here explicitly in case the mpxj
-            # package's directory walk silently found nothing.
-            for jar in mpxj_jars:
-                jpype.addClassPath(jar)
-
-            # Also register the wildcard path — Java's wildcard classpath
-            # notation (``/path/to/lib/*``) is the most reliable way to
-            # include all JARs in a directory.
-            mpxj_pkg_dir = os.path.dirname(mpxj.__file__)
-            jar_dir = os.path.join(mpxj_pkg_dir, "lib")
-            jpype.addClassPath(os.path.join(jar_dir, "*"))
-
+            # Build the classpath string from all discovered JARs and pass it
+            # directly as a JVM system property argument.  This bypasses all
+            # JPype classpath management (addClassPath / classpath= kwarg),
+            # both of which have proven unreliable in containerised environments.
+            classpath_str = ":".join(mpxj_jars)
             logger.info(
-                "Classpath entries registered via addClassPath; "
-                "starting JVM (no classpath= kwarg to avoid overriding addClassPath)"
+                "Starting JVM with -Djava.class.path containing %d JARs",
+                len(mpxj_jars),
             )
 
-            # Do NOT pass classpath= to startJVM.  In several JPype versions
-            # the classpath keyword *replaces* paths previously registered via
-            # addClassPath rather than merging with them.  By omitting it, the
-            # JVM picks up everything already registered.
-            jpype.startJVM(jvm_path, convertStrings=False)
+            jpype.startJVM(
+                jvm_path,
+                f"-Djava.class.path={classpath_str}",
+                convertStrings=False,
+            )
 
         logger.info("JVM started successfully")
 
