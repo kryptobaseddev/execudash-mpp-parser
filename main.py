@@ -41,7 +41,10 @@ def _start_jvm_background() -> None:
         jvm_path = jpype.getDefaultJVMPath()
         logger.info("JVM path: %s", jvm_path)
         if not jpype.isJVMStarted():
-            jpype.startJVM(jvm_path, convertStrings=False)
+            # Do NOT pass jvm_path positionally — JPype uses its internal _CLASSPATHS
+            # registry (populated by `import mpxj`) only when called without explicit path.
+            # Passing jvm_path as positional arg causes JPype to skip its classpath registry.
+            jpype.startJVM(convertStrings=False)
         logger.info("JVM started successfully")
         # Brief warm-up: access top-level Java package to confirm classpath
         _ = jpype.JPackage('org').mpxj
