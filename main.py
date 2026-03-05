@@ -56,6 +56,12 @@ def _start_jvm_background() -> None:
                 convertStrings=False,
             )
             logger.info("JVM started successfully")
+            # Log what the JVM actually sees as its classpath (java.class.path system property)
+            jvm_cp = str(jpype.java.lang.System.getProperty("java.class.path"))
+            logger.info("JVM java.class.path length=%d", len(jvm_cp))
+            # Log whether mpxj.jar appears in the JVM classpath
+            has_mpxj = "mpxj.jar" in jvm_cp
+            logger.info("mpxj.jar in JVM classpath: %s", has_mpxj)
         else:
             logger.info("JVM already running (started externally)")
 
