@@ -41,13 +41,17 @@ def _start_jvm_background() -> None:
         if not jpype.isJVMStarted():
             jvm_path = jpype.getDefaultJVMPath()
             logger.info("JVM path resolved to: %s", jvm_path)
-            # Log the classpath so we can confirm MPXJ JARs were registered by
-            # the top-level `import mpxj` (which calls jpype.addClassPath for each JAR).
+            # Collect classpath registered by `import mpxj` (via jpype.addClassPath).
+            # We explicitly pass it as classpath= to startJVM so it is set as the
+            # JVM -Djava.class.path option, not just held in JPype's DynamicClassLoader
+            # registry (which only works post-startup in JPype 1.5+).
             registered_cp = jpype.getClassPath()
-            logger.info("Classpath before startJVM: %s", registered_cp)
-            # Use keyword argument jvmpath= (not positional) to avoid JPype treating
-            # the path as a JVM flag argument, which would drop the addClassPath classpath.
-            jpype.startJVM(jvmpath=jvm_path, convertStrings=False)
+            logger.info("Classpath before startJVM (%d chars): %s", len(registered_cp), registered_cp)
+            jpype.startJVM(
+                jvmpath=jvm_path,
+                classpath=registered_cp,
+                convertStrings=False,
+            )
             logger.info("JVM started successfully")
         else:
             logger.info("JVM already running (started externally)")
