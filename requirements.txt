@@ -1,5 +1,5 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.0
 python-multipart==0.0.9
-mpxj==13.8.0
-JPype1==1.5.0
+mpxj==15.3.1
+JPype1==1.6.0

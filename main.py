@@ -1,5 +1,4 @@
 import asyncio
-import glob
 import os
 import tempfile
 import threading
@@ -20,28 +19,6 @@ logging.basicConfig(
 )
 
 
-def _collect_mpxj_jars() -> list[str]:
-    """Locate all MPXJ JAR files from the installed mpxj Python package.
-
-    The mpxj pip package bundles its JARs under <package_dir>/lib/.
-    We resolve them explicitly rather than relying solely on the side-effect
-    import (``import mpxj`` calls ``jpype.addClassPath``), because that
-    mechanism silently produces an empty classpath when the JARs are not
-    found at the expected relative path.
-    """
-    mpxj_pkg_dir = os.path.dirname(mpxj.__file__)
-    jar_dir = os.path.join(mpxj_pkg_dir, "lib")
-    jars = sorted(glob.glob(os.path.join(jar_dir, "*.jar")))
-    logger.info(
-        "MPXJ JAR directory: %s  (%d JARs found)", jar_dir, len(jars),
-    )
-    if not jars:
-        logger.error(
-            "No JAR files found in %s — MPXJ classes will NOT be available", jar_dir,
-        )
-    return jars
-
-
 def _parse_allowed_origins() -> list[str]:
     """Parse ALLOWED_ORIGINS env var (comma-separated) into a list of origin strings."""
     raw = os.environ.get("ALLOWED_ORIGINS", "*").strip()
@@ -57,51 +34,26 @@ _jvm_error: str | None = None
 
 
 def _start_jvm_background() -> None:
-    """Start JVM in daemon thread so uvicorn binds the port immediately."""
+    """Start JVM in daemon thread so uvicorn binds the port immediately.
+
+    The ``import mpxj`` statement at module level registers all MPXJ JARs
+    on JPype's classpath automatically via mpxj's __init__.py.  We only
+    need to call ``jpype.startJVM()`` — no manual classpath management.
+    """
     global _jvm_error
     try:
         logger.info("JVM startup beginning (background thread)...")
-        jvm_path = jpype.getDefaultJVMPath()
-        logger.info("JVM path: %s", jvm_path)
 
         if not jpype.isJVMStarted():
-            mpxj_jars = _collect_mpxj_jars()
-
-            # Ensure every discovered JAR is on JPype's classpath.
-            # ``import mpxj`` already called ``addClassPath()`` for each JAR
-            # in its __init__.py, but we add them again here as a safety-net
-            # (addClassPath is idempotent before JVM start).
-            for jar in mpxj_jars:
-                jpype.addClassPath(jar)
-
-            resolved_cp = jpype.getClassPath()
-            logger.info(
-                "Starting JVM — JPype classpath has %d entries",
-                len(resolved_cp.split(os.pathsep)) if resolved_cp else 0,
-            )
-            logger.info("Classpath: %s", resolved_cp)
-
-            # Use JPype's classpath= kwarg which feeds into its own
-            # classloader.  Previous attempts used -Djava.class.path which
-            # bypasses JPype's classloader and breaks jpype.imports.
-            jpype.startJVM(
-                jvm_path,
-                convertStrings=False,
-            )
+            jpype.startJVM(convertStrings=False)
 
         logger.info("JVM started successfully")
 
-        # Validate that MPXJ classes are actually loadable.
-        # Use jpype.JClass() which resolves through the JVM classloader
-        # directly — more reliable than Python-style ``from org.mpxj...``
-        # imports which depend on jpype.imports hooks.
         try:
-            UniversalProjectReader = jpype.JClass(
-                "org.mpxj.reader.UniversalProjectReader"
-            )
+            UPR = jpype.JClass("org.mpxj.reader.UniversalProjectReader")
             logger.info(
                 "MPXJ classpath probe succeeded — UniversalProjectReader: %s",
-                UniversalProjectReader,
+                UPR,
             )
         except Exception as probe_err:
             logger.error(
