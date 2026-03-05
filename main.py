@@ -46,9 +46,16 @@ def _start_jvm_background() -> None:
             # Passing jvm_path as positional arg causes JPype to skip its classpath registry.
             jpype.startJVM(convertStrings=False)
         logger.info("JVM started successfully")
-        # Brief warm-up: access top-level Java package to confirm classpath
-        _ = jpype.JPackage('org').mpxj
-        logger.info("MPXJ classpath confirmed")
+        # Non-fatal classpath probe — log result but never fail startup over it.
+        # The authoritative class load happens inside parse_mpp (post-JVM, with jpype.imports active).
+        try:
+            _ = jpype.JPackage('org').mpxj
+            logger.info("MPXJ classpath probe succeeded via JPackage")
+        except Exception as probe_err:
+            logger.warning(
+                "MPXJ JPackage probe failed (non-fatal — class load deferred to request handler): %s",
+                probe_err,
+            )
         _jvm_ready.set()
     except Exception as exc:
         _jvm_error = str(exc)
