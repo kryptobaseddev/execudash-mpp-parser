@@ -66,24 +66,46 @@ def _start_jvm_background() -> None:
 
         if not jpype.isJVMStarted():
             mpxj_jars = _collect_mpxj_jars()
-            # Build the classpath from explicitly discovered JARs *plus*
-            # anything already registered via jpype.addClassPath (the mpxj
-            # side-effect import).  Using the explicit list as the classpath
-            # keyword ensures the JARs are on java.class.path even if the
-            # side-effect registration was silently empty.
-            classpath = mpxj_jars if mpxj_jars else None
-            logger.info("Starting JVM with classpath: %s", classpath)
-            jpype.startJVM(classpath=classpath, convertStrings=False)
+
+            # Register every JAR via addClassPath BEFORE startJVM.
+            # ``import mpxj`` (at module level) already calls addClassPath
+            # for each JAR, but we repeat here explicitly in case the mpxj
+            # package's directory walk silently found nothing.
+            for jar in mpxj_jars:
+                jpype.addClassPath(jar)
+
+            # Also register the wildcard path — Java's wildcard classpath
+            # notation (``/path/to/lib/*``) is the most reliable way to
+            # include all JARs in a directory.
+            mpxj_pkg_dir = os.path.dirname(mpxj.__file__)
+            jar_dir = os.path.join(mpxj_pkg_dir, "lib")
+            jpype.addClassPath(os.path.join(jar_dir, "*"))
+
+            logger.info(
+                "Classpath entries registered via addClassPath; "
+                "starting JVM (no classpath= kwarg to avoid overriding addClassPath)"
+            )
+
+            # Do NOT pass classpath= to startJVM.  In several JPype versions
+            # the classpath keyword *replaces* paths previously registered via
+            # addClassPath rather than merging with them.  By omitting it, the
+            # JVM picks up everything already registered.
+            jpype.startJVM(jvm_path, convertStrings=False)
 
         logger.info("JVM started successfully")
 
-        # Validate that MPXJ classes are actually loadable.
+        # Validate that MPXJ classes are actually loadable by performing
+        # the real import that the /parse-mpp endpoint needs.  JPackage
+        # returns a lazy stub in some JPype versions and may not throw for
+        # missing classes, so we use the direct import instead.
         try:
-            _ = jpype.JPackage('org').mpxj
-            logger.info("MPXJ classpath probe succeeded via JPackage")
+            from org.mpxj.reader import UniversalProjectReader  # noqa: F811
+            logger.info(
+                "MPXJ classpath probe succeeded — UniversalProjectReader is loadable"
+            )
         except Exception as probe_err:
             logger.error(
-                "MPXJ JPackage probe FAILED — org.mpxj classes are NOT on the classpath: %s",
+                "MPXJ classpath probe FAILED — org.mpxj classes are NOT on the classpath: %s",
                 probe_err,
             )
             _jvm_error = f"MPXJ classes not found on classpath: {probe_err}"
