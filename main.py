@@ -59,6 +59,22 @@ def _start_jvm_background() -> None:
                 len(jvm_cp), "mpxj.jar" in jvm_cp, jpype_cp,
                 sys_cl.getClass().getName()
             )
+            # Try loading via Class.forName with AppClassLoader directly
+            try:
+                cls = jpype.java.lang.Class.forName(
+                    "org.mpxj.reader.UniversalProjectReader", True, sys_cl
+                )
+                logger.info("Class.forName with AppClassLoader SUCCEEDED: %s", cls)
+            except Exception as fn_err:
+                logger.info("Class.forName with AppClassLoader FAILED: %s | cause: %s",
+                            fn_err, getattr(fn_err, '__cause__', None))
+            # Try JClass as alternative loading mechanism
+            try:
+                UPR_via_jclass = jpype.JClass("org.mpxj.reader.UniversalProjectReader")
+                logger.info("JClass loading SUCCEEDED: %s", UPR_via_jclass)
+            except Exception as jc_err:
+                logger.info("JClass loading FAILED: %s | cause: %s",
+                            jc_err, getattr(jc_err, '__cause__', None))
         else:
             logger.info("JVM already running (started externally)")
 
