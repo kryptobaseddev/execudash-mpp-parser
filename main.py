@@ -9,6 +9,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 import jpype
+import jpype.imports  # Required: activates Java package import hooks
 import mpxj  # noqa: F401 — side-effect import: registers MPXJ JARs on the JVM classpath
 
 logger = logging.getLogger("mpp_parser")
@@ -33,82 +34,22 @@ _jvm_error: str | None = None
 
 
 def _start_jvm_background() -> None:
-    """Initialize JVM and MPXJ in a daemon thread so uvicorn binds immediately."""
+    """Start JVM in daemon thread so uvicorn binds the port immediately."""
     global _jvm_error
     try:
-        logger.info("Background JVM startup beginning...")
-
+        logger.info("JVM startup beginning (background thread)...")
+        jvm_path = jpype.getDefaultJVMPath()
+        logger.info("JVM path: %s", jvm_path)
         if not jpype.isJVMStarted():
-            jvm_path = jpype.getDefaultJVMPath()
-            logger.info("JVM path resolved to: %s", jvm_path)
-            # Log the pre-startup classpath (registered by `import mpxj` via addClassPath)
-            registered_cp_str = jpype.getClassPath()
-            registered_cp_list = [p for p in registered_cp_str.split(os.pathsep) if p]
-            logger.info("Pre-startJVM classpath: %d JARs", len(registered_cp_list))
-            # Verify the JARs actually exist and are readable on the filesystem
-            missing = [p for p in registered_cp_list if not os.path.isfile(p)]
-            readable = [p for p in registered_cp_list if os.path.isfile(p) and os.access(p, os.R_OK)]
-            logger.info("JAR check: %d exist+readable, %d missing: %s",
-                        len(readable), len(missing), missing[:3] if missing else "none")
-            # Call startJVM with NO explicit classpath — let JPype use its internal
-            # _CLASSPATHS registry (populated by `import mpxj`). This is the documented
-            # correct pattern: import mpxj → startJVM() → from org.mpxj...
-            jpype.startJVM(convertStrings=False)
-            logger.info("JVM started successfully")
-            # Check post-startup classloader state
-            jvm_cp = str(jpype.java.lang.System.getProperty("java.class.path"))
-            jpype_cp = str(jpype.java.lang.System.getProperty("jpype.class.path"))
-            sys_cl = jpype.java.lang.ClassLoader.getSystemClassLoader()
-            logger.info(
-                "Post-start: java.class.path len=%d, mpxj.jar=%s, jpype.class.path=%s, syscl=%s",
-                len(jvm_cp), "mpxj.jar" in jvm_cp, jpype_cp,
-                sys_cl.getClass().getName()
-            )
-            # Try loading via Class.forName with AppClassLoader directly
-            try:
-                cls = jpype.java.lang.Class.forName(
-                    "org.mpxj.reader.UniversalProjectReader", True, sys_cl
-                )
-                logger.info("Class.forName with AppClassLoader SUCCEEDED: %s", cls)
-            except Exception as fn_err:
-                logger.info("Class.forName with AppClassLoader FAILED: %s | cause: %s",
-                            fn_err, getattr(fn_err, '__cause__', None))
-            # Try JClass as alternative loading mechanism
-            try:
-                UPR_via_jclass = jpype.JClass("org.mpxj.reader.UniversalProjectReader")
-                logger.info("JClass loading SUCCEEDED: %s", UPR_via_jclass)
-            except Exception as jc_err:
-                logger.info("JClass loading FAILED: %s | cause: %s",
-                            jc_err, getattr(jc_err, '__cause__', None))
-        else:
-            logger.info("JVM already running (started externally)")
-
-        # Attempt 1: standard Python import syntax (works when JARs are on classpath)
-        try:
-            from org.mpxj.reader import UniversalProjectReader  # noqa: F401
-            logger.info("UniversalProjectReader loaded via direct import")
-        except ImportError as imp_err:
-            # Log the chained Java exception so we know the real cause
-            logger.warning(
-                "Direct import failed: %s | cause: %s", imp_err, imp_err.__cause__
-            )
-            # Attempt 2: JPackage fallback (same classpath, different access path)
-            logger.info("Trying JPackage fallback...")
-            org = jpype.JPackage("org")
-            _reader_class = org.mpxj.reader.UniversalProjectReader
-            # Instantiate to confirm it's a real class (JPackage returns a stub if missing)
-            _test = _reader_class()
-            logger.info("UniversalProjectReader loaded via JPackage fallback")
-
-        logger.info("JVM started and MPXJ warmed successfully")
+            jpype.startJVM(jvm_path, convertStrings=False)
+        logger.info("JVM started successfully")
+        # Brief warm-up: access top-level Java package to confirm classpath
+        _ = jpype.JPackage('org').mpxj
+        logger.info("MPXJ classpath confirmed")
         _jvm_ready.set()
     except Exception as exc:
-        cause = getattr(exc, "__cause__", None)
         _jvm_error = str(exc)
-        logger.error(
-            "JVM startup failed: %s | cause: %s", exc, cause, exc_info=True
-        )
-        # Still set event so /parse-mpp can return the error rather than hang
+        logger.error("JVM startup failed: %s", exc, exc_info=True)
         _jvm_ready.set()
 
 
