@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import os
 import tempfile
 import threading
@@ -10,13 +11,35 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import jpype
 import jpype.imports  # Required: activates Java package import hooks
-import mpxj  # noqa: F401 — side-effect import: registers MPXJ JARs on the JVM classpath
+import mpxj
 
 logger = logging.getLogger("mpp_parser")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+
+
+def _collect_mpxj_jars() -> list[str]:
+    """Locate all MPXJ JAR files from the installed mpxj Python package.
+
+    The mpxj pip package bundles its JARs under <package_dir>/lib/.
+    We resolve them explicitly rather than relying solely on the side-effect
+    import (``import mpxj`` calls ``jpype.addClassPath``), because that
+    mechanism silently produces an empty classpath when the JARs are not
+    found at the expected relative path.
+    """
+    mpxj_pkg_dir = os.path.dirname(mpxj.__file__)
+    jar_dir = os.path.join(mpxj_pkg_dir, "lib")
+    jars = sorted(glob.glob(os.path.join(jar_dir, "*.jar")))
+    logger.info(
+        "MPXJ JAR directory: %s  (%d JARs found)", jar_dir, len(jars),
+    )
+    if not jars:
+        logger.error(
+            "No JAR files found in %s — MPXJ classes will NOT be available", jar_dir,
+        )
+    return jars
 
 
 def _parse_allowed_origins() -> list[str]:
@@ -40,22 +63,33 @@ def _start_jvm_background() -> None:
         logger.info("JVM startup beginning (background thread)...")
         jvm_path = jpype.getDefaultJVMPath()
         logger.info("JVM path: %s", jvm_path)
+
         if not jpype.isJVMStarted():
-            # Do NOT pass jvm_path positionally — JPype uses its internal _CLASSPATHS
-            # registry (populated by `import mpxj`) only when called without explicit path.
-            # Passing jvm_path as positional arg causes JPype to skip its classpath registry.
-            jpype.startJVM(convertStrings=False)
+            mpxj_jars = _collect_mpxj_jars()
+            # Build the classpath from explicitly discovered JARs *plus*
+            # anything already registered via jpype.addClassPath (the mpxj
+            # side-effect import).  Using the explicit list as the classpath
+            # keyword ensures the JARs are on java.class.path even if the
+            # side-effect registration was silently empty.
+            classpath = mpxj_jars if mpxj_jars else None
+            logger.info("Starting JVM with classpath: %s", classpath)
+            jpype.startJVM(classpath=classpath, convertStrings=False)
+
         logger.info("JVM started successfully")
-        # Non-fatal classpath probe — log result but never fail startup over it.
-        # The authoritative class load happens inside parse_mpp (post-JVM, with jpype.imports active).
+
+        # Validate that MPXJ classes are actually loadable.
         try:
             _ = jpype.JPackage('org').mpxj
             logger.info("MPXJ classpath probe succeeded via JPackage")
         except Exception as probe_err:
-            logger.warning(
-                "MPXJ JPackage probe failed (non-fatal — class load deferred to request handler): %s",
+            logger.error(
+                "MPXJ JPackage probe FAILED — org.mpxj classes are NOT on the classpath: %s",
                 probe_err,
             )
+            _jvm_error = f"MPXJ classes not found on classpath: {probe_err}"
+            _jvm_ready.set()
+            return
+
         _jvm_ready.set()
     except Exception as exc:
         _jvm_error = str(exc)
