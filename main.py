@@ -270,6 +270,23 @@ async def parse_mpp(file: UploadFile = File(...)):
             raw_finish = task.getFinish()
             finish_date: str | None = str(raw_finish) if raw_finish is not None else None
 
+            # ── Resource names ─────────────────────────────────────────────
+            resource_names: str | None = None
+            try:
+                assignments = task.getResourceAssignments()
+                if assignments:
+                    names = []
+                    for assignment in assignments:
+                        resource = assignment.getResource()
+                        if resource:
+                            name = str(resource.getName()) if resource.getName() else None
+                            if name:
+                                names.append(name)
+                    if names:
+                        resource_names = ", ".join(names)
+            except Exception:
+                resource_names = None
+
             tasks.append(
                 {
                     "id": int(task_id),
@@ -282,6 +299,7 @@ async def parse_mpp(file: UploadFile = File(...)):
                     "percent_complete": percent_complete,
                     "is_milestone": is_milestone,
                     "summary": is_summary,
+                    "resource_names": resource_names,
                 }
             )
 
