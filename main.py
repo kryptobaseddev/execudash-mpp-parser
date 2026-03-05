@@ -45,6 +45,11 @@ def _start_jvm_background() -> None:
             registered_cp_str = jpype.getClassPath()
             registered_cp_list = [p for p in registered_cp_str.split(os.pathsep) if p]
             logger.info("Pre-startJVM classpath: %d JARs", len(registered_cp_list))
+            # Verify the JARs actually exist and are readable on the filesystem
+            missing = [p for p in registered_cp_list if not os.path.isfile(p)]
+            readable = [p for p in registered_cp_list if os.path.isfile(p) and os.access(p, os.R_OK)]
+            logger.info("JAR check: %d exist+readable, %d missing: %s",
+                        len(readable), len(missing), missing[:3] if missing else "none")
             # Call startJVM with NO explicit classpath — let JPype use its internal
             # _CLASSPATHS registry (populated by `import mpxj`). This is the documented
             # correct pattern: import mpxj → startJVM() → from org.mpxj...
