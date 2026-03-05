@@ -37,15 +37,44 @@ def _start_jvm_background() -> None:
     global _jvm_error
     try:
         logger.info("Background JVM startup beginning...")
+
         if not jpype.isJVMStarted():
-            jpype.startJVM()
-        # Warm-load UniversalProjectReader to force JAR class loading now
-        from org.mpxj.reader import UniversalProjectReader  # noqa: F401
+            jvm_path = jpype.getDefaultJVMPath()
+            logger.info("JVM path resolved to: %s", jvm_path)
+            # Log the classpath so we can confirm MPXJ JARs were registered by
+            # the top-level `import mpxj` (which calls jpype.addClassPath for each JAR).
+            registered_cp = jpype.getClassPath()
+            logger.info("Classpath before startJVM: %s", registered_cp)
+            jpype.startJVM(jvm_path, convertStrings=False)
+            logger.info("JVM started successfully")
+        else:
+            logger.info("JVM already running (started externally)")
+
+        # Attempt 1: standard Python import syntax (works when JARs are on classpath)
+        try:
+            from org.mpxj.reader import UniversalProjectReader  # noqa: F401
+            logger.info("UniversalProjectReader loaded via direct import")
+        except ImportError as imp_err:
+            # Log the chained Java exception so we know the real cause
+            logger.warning(
+                "Direct import failed: %s | cause: %s", imp_err, imp_err.__cause__
+            )
+            # Attempt 2: JPackage fallback (same classpath, different access path)
+            logger.info("Trying JPackage fallback...")
+            org = jpype.JPackage("org")
+            _reader_class = org.mpxj.reader.UniversalProjectReader
+            # Instantiate to confirm it's a real class (JPackage returns a stub if missing)
+            _test = _reader_class()
+            logger.info("UniversalProjectReader loaded via JPackage fallback")
+
         logger.info("JVM started and MPXJ warmed successfully")
         _jvm_ready.set()
     except Exception as exc:
+        cause = getattr(exc, "__cause__", None)
         _jvm_error = str(exc)
-        logger.error("JVM startup failed: %s", exc)
+        logger.error(
+            "JVM startup failed: %s | cause: %s", exc, cause, exc_info=True
+        )
         # Still set event so /parse-mpp can return the error rather than hang
         _jvm_ready.set()
 
